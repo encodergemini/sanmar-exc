@@ -238,3 +238,250 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
 
     clearBtn.addEventListener("click", () => {
       fileList.innerHTML = "";
+      queueContainer.classList.add("hidden");
+    });
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("border-blue-500", "bg-blue-50/50");
+    });
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("border-blue-500", "bg-blue-50/50");
+    });
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("border-blue-500", "bg-blue-50/50");
+      if (e.dataTransfer.files?.length) handleFiles(Array.from(e.dataTransfer.files));
+    });
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files?.length) {
+        handleFiles(Array.from(e.target.files));
+        fileInput.value = "";
+      }
+    });
+
+    function splitValues(rawText) {
+      if (!rawText) return [];
+      const text = String(rawText).trim().replace(/,+$/, "").trim();
+      if (!text) return [];
+      const protectedText = text.replace(
+        /\b(CO|INC|LTD|CORP|LLC|PVT|PTE|S\.A|MFTG)\.,\s*(LTD|INC|CORP|LLC|BHD|PVT|PTE)\b/gi,
+        "$1.__COMMA__$2"
+      );
+      return protectedText
+        .split(/[,/;]+/)
+        .map((part) => part.replace(/__COMMA__/g, ", ").replace(/\s{2,}/g, " ").trim())
+        .filter(Boolean);
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function parseIsoDateUTC(isoStr) {
+      if (!isoStr) return null;
+      const match = String(isoStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return isoStr;
+      return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    }
+
+    async function extractWithGeminiDirect(pdfBase64, masterPrompt, apiKey) {
+      const systemInstruction = `Kamu adalah sistem ekstraksi data dokumen laporan pengujian laboratorium (Intertek / SanMar Test Report) presisi tinggi.
+Ekstrak nilai dari file PDF terlampir dan petakan ke JSON sesuai Aturan Utama pengguna.
+
+ATURAN EKSTRAKSI PENTING:
+1. Jika sebuah field di PDF kosong, tidak ada, atau hanya berisi strip kosong, isi dengan null. Jangan mengarang nilai.
+2. Untuk TRPT_DATE (Issue Date), konversi ke format ISO YYYY-MM-DD (misal "Nov 12, 2026" -> "2026-11-12").
+3. Pertahankan angka nol di depan (leading zeros) pada kode seperti Sew Factory No. (misal "006442" atau "004932") dan Supplier No. (misal "6043" atau "643").
+4. Periksa juga bagian "Other/Notes" di PDF jika field seperti Form No., Fabric Mill Item No., atau Product Test Request ID tertulis di sana.
+5. Untuk Product Type (DTLA_FIELD_7), rapikan spasi di sekitar tanda hubung agar sesuai daftar standar SanMar jika cocok (contoh: "03-Wovens -All Fibers" -> "03 - Wovens - All Fibers", "01- Knits - All Fibers" -> "01 - Knits - All Fibers").
+6. Untuk APPLICANT PROVIDED CARE INSTRUCTION (MSTA_FIELD_5), gabungkan baris-baris instruksi perawatan menjadi satu kalimat dipisahkan koma dan spasi (abaikan label "Sample: A").
+7. Untuk field di JOBDTLANALYSIS, kembalikan teks mentah dari PDF apa adanya (termasuk pemisah koma, garis miring, atau titik koma) agar dapat diproses ke bawah oleh injector Excel.`;
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents: [
+            {
+              parts: [
+                { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+                { text: masterPrompt },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: RESPONSE_SCHEMA,
+            temperature: 0,
+          },
+        }),
+      });
+
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.error?.message || `Error Gemini API (HTTP ${res.status})`);
+      }
+
+      const jsonText = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!jsonText) throw new Error("Tidak ada respons JSON dari Gemini API.");
+      return JSON.parse(jsonText);
+    }
+
+    async function buildExcelFromData(extractedData, fallbackName) {
+      const resp = await fetch("./sanmar-template.xlsx");
+      if (!resp.ok) throw new Error("Gagal memuat file sanmar-template.xlsx");
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("text/html")) {
+        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/.");
+      }
+      const arrayBuffer = await resp.arrayBuffer();
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(arrayBuffer);
+
+      // 1. JOBINFO (Baris 4)
+      const wsJobInfo = workbook.getWorksheet("JOBINFO");
+      const jobInfoCols = {};
+      wsJobInfo.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) jobInfoCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const jobInfoData = extractedData.JOBINFO || {};
+      for (const [fieldName, val] of Object.entries(jobInfoData)) {
+        const colIdx = jobInfoCols[fieldName];
+        if (!colIdx || val === null || val === undefined || val === "") continue;
+        const cell = wsJobInfo.getRow(4).getCell(colIdx);
+        if (fieldName === "TRPT_DATE") {
+          const dt = parseIsoDateUTC(val);
+          cell.value = dt;
+          if (dt instanceof Date) cell.numFmt = "[$-409]d\\-mmm\\-yyyy;@";
+        } else {
+          cell.value = String(val);
+          cell.numFmt = "@";
+        }
+      }
+
+      // 2. JOBANALYSIS (Baris 4)
+      const wsJobAnalysis = workbook.getWorksheet("JOBANALYSIS");
+      const jobAnalysisCols = {};
+      wsJobAnalysis.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) jobAnalysisCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const jobAnalysisData = extractedData.JOBANALYSIS || {};
+      for (const [fieldName, val] of Object.entries(jobAnalysisData)) {
+        const colIdx = jobAnalysisCols[fieldName];
+        if (!colIdx || val === null || val === undefined || val === "") continue;
+        const cell = wsJobAnalysis.getRow(4).getCell(colIdx);
+        cell.value = String(val);
+        cell.numFmt = "@";
+      }
+
+      // 3. JOBDTLANALYSIS (Baris 4 ke bawah, split by , / ;)
+      const wsDtl = workbook.getWorksheet("JOBDTLANALYSIS");
+      const dtlCols = {};
+      wsDtl.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) dtlCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const dtlData = extractedData.JOBDTLANALYSIS || {};
+      for (const [fieldName, rawVal] of Object.entries(dtlData)) {
+        const colIdx = dtlCols[fieldName];
+        if (!colIdx || rawVal === null || rawVal === undefined || rawVal === "") continue;
+        const items = splitValues(rawVal);
+        items.forEach((item, idx) => {
+          const rowIdx = 4 + idx;
+          const cell = wsDtl.getRow(rowIdx).getCell(colIdx);
+          cell.value = item;
+          cell.numFmt = "@";
+        });
+      }
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const reportNo = (jobInfoData.TRPT_NO || jobInfoData.JOB_NO || fallbackName.replace(/\.pdf$/i, "")).trim();
+      const outputFilename = `${reportNo}.xlsx`;
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      return { blob, outputFilename };
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    async function handleFiles(files) {
+      const apiKey = apiKeyInput.value.trim();
+      if (!apiKey) {
+        alert("Masukkan Gemini API Key Anda terlebih dahulu pada kotak di bagian atas.");
+        apiKeyInput.focus();
+        return;
+      }
+
+      const pdfFiles = files.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+      if (!pdfFiles.length) return;
+
+      queueContainer.classList.remove("hidden");
+
+      for (const file of pdfFiles) {
+        const li = document.createElement("li");
+        li.className = "flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50";
+        li.innerHTML = `
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-800 truncate">${file.name}</p>
+            <p class="status-text text-xs text-blue-600 mt-0.5">Membaca & mengekstrak data PDF...</p>
+          </div>
+          <div class="action-area shrink-0">
+            <span class="inline-block w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></span>
+          </div>
+        `;
+        fileList.prepend(li);
+
+        const statusEl = li.querySelector(".status-text");
+        const actionEl = li.querySelector(".action-area");
+
+        try {
+          const pdfBase64 = await fileToBase64(file);
+          const extractedData = await extractWithGeminiDirect(pdfBase64, promptTextarea.value, apiKey);
+
+          statusEl.textContent = "Mengisi template Excel...";
+          const { blob, outputFilename } = await buildExcelFromData(extractedData, file.name);
+
+          triggerDownload(blob, outputFilename);
+
+          statusEl.className = "status-text text-xs text-emerald-600 mt-0.5";
+          statusEl.textContent = `Selesai -> ${outputFilename}`;
+
+          const btn = document.createElement("button");
+          btn.className = "text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white transition";
+          btn.textContent = "Unduh Ulang .xlsx";
+          btn.onclick = () => triggerDownload(blob, outputFilename);
+
+          actionEl.innerHTML = "";
+          actionEl.appendChild(btn);
+        } catch (err) {
+          statusEl.className = "status-text text-xs text-rose-600 mt-0.5";
+          statusEl.textContent = err.message || "Gagal memproses file";
+          actionEl.innerHTML = `<span class="text-xs font-semibold text-rose-600">Error</span>`;
+        }
+      }
+    }
+  </script>
+</body>
+</html>
