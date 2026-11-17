@@ -166,7 +166,7 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
       if (!rawText) return [];
       const text = String(rawText).trim().replace(/,+$/, "").trim();
       if (!text) return [];
-      // Protect legal suffixes such as "CO., LTD" or "CO.,LTD"
+      // Lindungi singkatan perusahaan seperti "CO., LTD" atau "CO.,LTD" agar tidak terpotong
       const protectedText = text.replace(
         /\b(CO|INC|LTD|CORP|LLC|PVT|PTE|S\.A|MFTG)\.,\s*(LTD|INC|CORP|LLC|BHD|PVT|PTE)\b/gi,
         "$1.__COMMA__$2"
@@ -200,12 +200,16 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
     async function buildExcelFromData(extractedData, fallbackName) {
       const resp = await fetch("./sanmar-template.xlsx");
       if (!resp.ok) throw new Error("Gagal memuat file sanmar-template.xlsx");
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("text/html")) {
+        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/ repository Anda.");
+      }
       const arrayBuffer = await resp.arrayBuffer();
 
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(arrayBuffer);
 
-      // 1. Populate JOBINFO (Row 4)
+      // 1. Populate JOBINFO (Baris 4)
       const wsJobInfo = workbook.getWorksheet("JOBINFO");
       const jobInfoCols = {};
       wsJobInfo.getRow(1).eachCell((cell, colNumber) => {
@@ -229,7 +233,7 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
         }
       }
 
-      // 2. Populate JOBANALYSIS (Row 4)
+      // 2. Populate JOBANALYSIS (Baris 4)
       const wsJobAnalysis = workbook.getWorksheet("JOBANALYSIS");
       const jobAnalysisCols = {};
       wsJobAnalysis.getRow(1).eachCell((cell, colNumber) => {
@@ -245,7 +249,7 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
         cell.numFmt = "@";
       }
 
-      // 3. Populate JOBDTLANALYSIS (Row 4 downwards, split by , / ;)
+      // 3. Populate JOBDTLANALYSIS (Baris 4 ke bawah, dipecah berdasarkan , / ;)
       const wsDtl = workbook.getWorksheet("JOBDTLANALYSIS");
       const dtlCols = {};
       wsDtl.getRow(1).eachCell((cell, colNumber) => {
@@ -310,7 +314,7 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
 
         try {
           const pdfBase64 = await fileToBase64(file);
-          const response = await fetch("/api/extract", {
+          const response = await fetch("/.netlify/functions/extract", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -319,7 +323,16 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
             }),
           });
 
-          const result = await response.json();
+          const rawText = await response.text();
+          let result;
+          try {
+            result = JSON.parse(rawText.trim());
+          } catch {
+            throw new Error(
+              `Server merespons HTML (HTTP ${response.status}). Pastikan file netlify/functions/extract.mjs sudah ter-deploy di Netlify.`
+            );
+          }
+
           if (!response.ok || !result.success) {
             throw new Error(result.error || "Gagal mengekstrak PDF");
           }
