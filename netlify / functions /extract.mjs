@@ -28,22 +28,10 @@ const RESPONSE_SCHEMA = {
         TRPT_SPECIFICATION: { type: Type.STRING, nullable: true },
       },
       required: [
-        "JOB_NO",
-        "TRPT_NO",
-        "TRPT_DATE",
-        "TXT_FINISH",
-        "DETOX_URL",
-        "TRPT_ASST_NO",
-        "TXT_END_USE",
-        "ITS_MAPP_NO",
-        "SUPPLIER_ID",
-        "FACTORY_ID",
-        "TRPT_ITEM_DESC",
-        "TXT_FABRIC_CONSTRU",
-        "TRPT_BUSLINE",
-        "TRPT_TESTING_STATUS",
-        "TXT_FIBER_CONTENT",
-        "TRPT_SPECIFICATION",
+        "JOB_NO", "TRPT_NO", "TRPT_DATE", "TXT_FINISH", "DETOX_URL",
+        "TRPT_ASST_NO", "TXT_END_USE", "ITS_MAPP_NO", "SUPPLIER_ID",
+        "FACTORY_ID", "TRPT_ITEM_DESC", "TXT_FABRIC_CONSTRU", "TRPT_BUSLINE",
+        "TRPT_TESTING_STATUS", "TXT_FIBER_CONTENT", "TRPT_SPECIFICATION",
       ],
     },
     JOBANALYSIS: {
@@ -58,13 +46,8 @@ const RESPONSE_SCHEMA = {
         MSTA_FIELD_5: { type: Type.STRING, nullable: true },
       },
       required: [
-        "MSTA_FIELD_1",
-        "MSTA_FIELD_4",
-        "MSTA_FIELD_6",
-        "MSTA_FIELD_2",
-        "MSTA_FIELD_7",
-        "MSTA_FIELD_8",
-        "MSTA_FIELD_5",
+        "MSTA_FIELD_1", "MSTA_FIELD_4", "MSTA_FIELD_6", "MSTA_FIELD_2",
+        "MSTA_FIELD_7", "MSTA_FIELD_8", "MSTA_FIELD_5",
       ],
     },
     JOBDTLANALYSIS: {
@@ -82,16 +65,9 @@ const RESPONSE_SCHEMA = {
         DTLA_FIELD_11: { type: Type.STRING, nullable: true },
       },
       required: [
-        "STY_NO_S",
-        "DTL_PORDER_NO",
-        "DTLA_FIELD_2",
-        "DTLA_FIELD_4",
-        "DTLA_FIELD_5",
-        "DTLA_FIELD_7",
-        "DTLA_FIELD_8",
-        "DTLA_FIELD_9",
-        "DTLA_FIELD_10",
-        "DTLA_FIELD_11",
+        "STY_NO_S", "DTL_PORDER_NO", "DTLA_FIELD_2", "DTLA_FIELD_4",
+        "DTLA_FIELD_5", "DTLA_FIELD_7", "DTLA_FIELD_8", "DTLA_FIELD_9",
+        "DTLA_FIELD_10", "DTLA_FIELD_11",
       ],
     },
   },
@@ -111,27 +87,38 @@ export default async (req) => {
   }
 
   if (req.method !== "POST") {
-    return Response.json({ error: "Method not allowed" }, { status: 405 });
+    return Response.json({ success: false, error: "Method not allowed" }, { status: 405 });
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return Response.json(
-      { error: "GEMINI_API_KEY belum diatur di Environment Variables Netlify." },
+      { success: false, error: "GEMINI_API_KEY belum diatur di Environment Variables Netlify." },
       { status: 500 }
     );
   }
 
+  let body;
   try {
-    const { pdfBase64, masterPrompt } = await req.json();
+    body = await req.json();
+  } catch {
+    return Response.json({ success: false, error: "Format request tidak valid." }, { status: 400 });
+  }
 
-    if (!pdfBase64) {
-      return Response.json({ error: "File PDF tidak ditemukan dalam request." }, { status: 400 });
-    }
+  const { pdfBase64, masterPrompt } = body;
+  if (!pdfBase64) {
+    return Response.json({ success: false, error: "File PDF tidak ditemukan." }, { status: 400 });
+  }
 
-    const ai = new GoogleGenAI({ apiKey });
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      // Kirim 1 byte spasi segera agar Netlify membuka stream dan melewati batas timeout 10 detik
+      controller.enqueue(encoder.encode(" "));
 
-    const systemInstruction = `Kamu adalah sistem ekstraksi data dokumen laporan pengujian laboratorium (Intertek / SanMar Test Report) presisi tinggi.
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const systemInstruction = `Kamu adalah sistem ekstraksi data dokumen laporan pengujian laboratorium (Intertek / SanMar Test Report) presisi tinggi.
 Ekstrak nilai dari file PDF terlampir dan petakan ke JSON sesuai Aturan Utama pengguna.
 
 ATURAN EKSTRAKSI PENTING:
@@ -143,32 +130,43 @@ ATURAN EKSTRAKSI PENTING:
 6. Untuk APPLICANT PROVIDED CARE INSTRUCTION (MSTA_FIELD_5), gabungkan baris-baris instruksi perawatan menjadi satu kalimat dipisahkan koma dan spasi (abaikan label "Sample: A").
 7. Untuk field di JOBDTLANALYSIS, kembalikan teks mentah dari PDF apa adanya (termasuk pemisah koma, garis miring, atau titik koma) agar dapat diproses ke bawah oleh injector Excel.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          inlineData: {
-            mimeType: "application/pdf",
-            data: pdfBase64,
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
+            { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+            masterPrompt || "Ekstrak data PDF sesuai skema JSON yang ditentukan.",
+          ],
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json",
+            responseSchema: RESPONSE_SCHEMA,
+            temperature: 0,
           },
-        },
-        masterPrompt || "Ekstrak data PDF sesuai skema JSON yang ditentukan.",
-      ],
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: RESPONSE_SCHEMA,
-        temperature: 0,
-      },
-    });
+        });
 
-    const parsed = JSON.parse(response.text);
-    return Response.json({ success: true, data: parsed });
-  } catch (err) {
-    console.error("Extraction error:", err);
-    return Response.json(
-      { error: err?.message || "Terjadi kesalahan saat memproses PDF dengan Gemini API." },
-      { status: 500 }
-    );
-  }
+        const parsed = JSON.parse(response.text);
+        controller.enqueue(encoder.encode(JSON.stringify({ success: true, data: parsed })));
+      } catch (err) {
+        console.error("Extraction error:", err);
+        controller.enqueue(
+          encoder.encode(
+            JSON.stringify({
+              success: false,
+              error: err?.message || "Gagal memproses PDF dengan Gemini API.",
+            })
+          )
+        );
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-cache",
+    },
+  });
 };
