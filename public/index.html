@@ -13,7 +13,7 @@
     <header class="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-6">
       <div>
         <span class="inline-block px-2.5 py-0.5 text-xs font-semibold tracking-wide uppercase bg-blue-100 text-blue-800 rounded-full mb-2">
-          Intertek &bull; SanMar Workflow
+          Intertek &bull; SanMar Workflow (Worker Proxy)
         </span>
         <h1 class="text-2xl font-bold text-slate-900">PDF Report to SanMar Excel</h1>
         <p class="text-sm text-slate-500 mt-1">
@@ -33,7 +33,7 @@
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <label for="apiKeyInput" class="block text-sm font-semibold text-slate-800">Gemini API Key</label>
-          <p class="text-xs text-slate-500">Tersimpan otomatis di browser Anda (hanya dikirim langsung ke Google Gemini API).</p>
+          <p class="text-xs text-slate-500">Tersimpan di browser Anda (atau kosongkan jika sudah diatur di Cloudflare Variables).</p>
         </div>
         <div class="flex items-center gap-2 w-full sm:w-auto">
           <input id="apiKeyInput" type="password" placeholder="Tempel AIzaSy... di sini"
@@ -147,76 +147,6 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
 - Fabric Mill Name ke DTLA_FIELD_10
 - Sew Factory Name ke DTLA_FIELD_11`;
 
-    const RESPONSE_SCHEMA = {
-      type: "OBJECT",
-      properties: {
-        JOBINFO: {
-          type: "OBJECT",
-          properties: {
-            JOB_NO: { type: "STRING", nullable: true },
-            TRPT_NO: { type: "STRING", nullable: true },
-            TRPT_DATE: { type: "STRING", nullable: true, description: "Format YYYY-MM-DD dari Issue Date di PDF" },
-            TXT_FINISH: { type: "STRING", nullable: true },
-            DETOX_URL: { type: "STRING", nullable: true },
-            TRPT_ASST_NO: { type: "STRING", nullable: true },
-            TXT_END_USE: { type: "STRING", nullable: true },
-            ITS_MAPP_NO: { type: "STRING", nullable: true },
-            SUPPLIER_ID: { type: "STRING", nullable: true },
-            FACTORY_ID: { type: "STRING", nullable: true },
-            TRPT_ITEM_DESC: { type: "STRING", nullable: true },
-            TXT_FABRIC_CONSTRU: { type: "STRING", nullable: true },
-            TRPT_BUSLINE: { type: "STRING", nullable: true },
-            TRPT_TESTING_STATUS: { type: "STRING", nullable: true },
-            TXT_FIBER_CONTENT: { type: "STRING", nullable: true },
-            TRPT_SPECIFICATION: { type: "STRING", nullable: true },
-          },
-          required: [
-            "JOB_NO", "TRPT_NO", "TRPT_DATE", "TXT_FINISH", "DETOX_URL",
-            "TRPT_ASST_NO", "TXT_END_USE", "ITS_MAPP_NO", "SUPPLIER_ID",
-            "FACTORY_ID", "TRPT_ITEM_DESC", "TXT_FABRIC_CONSTRU", "TRPT_BUSLINE",
-            "TRPT_TESTING_STATUS", "TXT_FIBER_CONTENT", "TRPT_SPECIFICATION",
-          ],
-        },
-        JOBANALYSIS: {
-          type: "OBJECT",
-          properties: {
-            MSTA_FIELD_1: { type: "STRING", nullable: true },
-            MSTA_FIELD_4: { type: "STRING", nullable: true },
-            MSTA_FIELD_6: { type: "STRING", nullable: true },
-            MSTA_FIELD_2: { type: "STRING", nullable: true },
-            MSTA_FIELD_7: { type: "STRING", nullable: true },
-            MSTA_FIELD_8: { type: "STRING", nullable: true },
-            MSTA_FIELD_5: { type: "STRING", nullable: true },
-          },
-          required: [
-            "MSTA_FIELD_1", "MSTA_FIELD_4", "MSTA_FIELD_6", "MSTA_FIELD_2",
-            "MSTA_FIELD_7", "MSTA_FIELD_8", "MSTA_FIELD_5",
-          ],
-        },
-        JOBDTLANALYSIS: {
-          type: "OBJECT",
-          properties: {
-            STY_NO_S: { type: "STRING", nullable: true },
-            DTL_PORDER_NO: { type: "STRING", nullable: true },
-            DTLA_FIELD_2: { type: "STRING", nullable: true },
-            DTLA_FIELD_4: { type: "STRING", nullable: true },
-            DTLA_FIELD_5: { type: "STRING", nullable: true },
-            DTLA_FIELD_7: { type: "STRING", nullable: true },
-            DTLA_FIELD_8: { type: "STRING", nullable: true },
-            DTLA_FIELD_9: { type: "STRING", nullable: true },
-            DTLA_FIELD_10: { type: "STRING", nullable: true },
-            DTLA_FIELD_11: { type: "STRING", nullable: true },
-          },
-          required: [
-            "STY_NO_S", "DTL_PORDER_NO", "DTLA_FIELD_2", "DTLA_FIELD_4",
-            "DTLA_FIELD_5", "DTLA_FIELD_7", "DTLA_FIELD_8", "DTLA_FIELD_9",
-            "DTLA_FIELD_10", "DTLA_FIELD_11",
-          ],
-        },
-      },
-      required: ["JOBINFO", "JOBANALYSIS", "JOBDTLANALYSIS"],
-    };
-
     const PROMPT_KEY = "sanmar_master_prompt_v1";
     const API_KEY_STORAGE = "sanmar_gemini_api_key_v1";
     const MODEL_STORAGE = "sanmar_gemini_model_v1";
@@ -319,73 +249,44 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
       return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
     }
 
-    async function extractWithGeminiDirect(pdfBase64, masterPrompt, apiKey, modelName) {
-      const systemInstruction = `Kamu adalah sistem ekstraksi data dokumen laporan pengujian laboratorium (Intertek / SanMar Test Report) presisi tinggi.
-Ekstrak nilai dari file PDF terlampir dan petakan ke JSON sesuai Aturan Utama pengguna.
-
-ATURAN EKSTRAKSI PENTING:
-1. Jika sebuah field di PDF kosong, tidak ada, atau hanya berisi strip kosong, isi dengan null. Jangan mengarang nilai.
-2. Untuk TRPT_DATE (Issue Date), konversi ke format ISO YYYY-MM-DD (misal "Nov 12, 2026" -> "2026-11-12").
-3. Pertahankan angka nol di depan (leading zeros) pada kode seperti Sew Factory No. (misal "006442" atau "004932") dan Supplier No. (misal "6043" atau "643").
-4. Periksa juga bagian "Other/Notes" di PDF jika field seperti Form No., Fabric Mill Item No., atau Product Test Request ID tertulis di sana.
-5. Untuk Product Type (DTLA_FIELD_7), rapikan spasi di sekitar tanda hubung agar sesuai daftar standar SanMar jika cocok (contoh: "03-Wovens -All Fibers" -> "03 - Wovens - All Fibers", "01- Knits - All Fibers" -> "01 - Knits - All Fibers").
-6. Untuk APPLICANT PROVIDED CARE INSTRUCTION (MSTA_FIELD_5), gabungkan baris-baris instruksi perawatan menjadi satu kalimat dipisahkan koma dan spasi (abaikan label "Sample: A").
-7. Untuk field di JOBDTLANALYSIS, kembalikan teks mentah dari PDF apa adanya (termasuk pemisah koma, garis miring, atau titik koma) agar dapat diproses ke bawah oleh injector Excel.`;
-
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
+    async function extractViaWorkerProxy(pdfBase64, masterPrompt, apiKey, modelName) {
       let res;
       try {
-        res = await fetch(url, {
+        res = await fetch("/api/extract", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents: [
-              {
-                parts: [
-                  { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-                  { text: masterPrompt },
-                ],
-              },
-            ],
-            generationConfig: {
-              responseMimeType: "application/json",
-              responseSchema: RESPONSE_SCHEMA,
-              temperature: 0,
-            },
+            pdfBase64,
+            masterPrompt,
+            apiKey,
+            modelName,
           }),
         });
-      } catch (networkErr) {
-        throw new Error(
-          `Gagal terhubung ke server Google Gemini (${networkErr.message}). Periksa koneksi internet, matikan AdBlock/VPN/firewall kantor yang memblokir googleapis.com, atau coba ganti Model Gemini di atas.`
-        );
+      } catch (err) {
+        throw new Error(`Koneksi ke Worker terputus (${err.message}). Pastikan halaman dibuka lewat URL Cloudflare Workers.`);
       }
 
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload?.error?.message || `Error Gemini API (HTTP ${res.status})`);
+      const rawText = await res.text();
+      let payload;
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Server merespons non-JSON (HTTP ${res.status}). Pastikan worker.js dan wrangler.toml sudah ter-deploy.`);
       }
 
-      const jsonText = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!jsonText) throw new Error("Tidak ada respons JSON dari Gemini API.");
-      return JSON.parse(jsonText);
+      if (!res.ok || !payload.success) {
+        throw new Error(payload?.error || `Error server (HTTP ${res.status})`);
+      }
+
+      return payload.data;
     }
 
     async function buildExcelFromData(extractedData, fallbackName) {
-      let resp;
-      try {
-        resp = await fetch("./sanmar-template.xlsx");
-      } catch (tplErr) {
-        throw new Error(
-          `Gagal memuat file sanmar-template.xlsx (${tplErr.message}). Pastikan halaman ini dibuka melalui link HTTPS Cloudflare (bukan klik 2x file lokal).`
-        );
-      }
-
+      const resp = await fetch("./sanmar-template.xlsx");
       if (!resp.ok) throw new Error(`Gagal memuat sanmar-template.xlsx (HTTP ${resp.status})`);
       const contentType = resp.headers.get("content-type") || "";
       if (contentType.includes("text/html")) {
-        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/ repository Anda.");
+        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/.");
       }
       const arrayBuffer = await resp.arrayBuffer();
 
@@ -472,12 +373,6 @@ ATURAN EKSTRAKSI PENTING:
 
     async function handleFiles(files) {
       const apiKey = sanitizeApiKey(apiKeyInput.value);
-      if (!apiKey) {
-        alert("Masukkan Gemini API Key Anda terlebih dahulu pada kotak di bagian atas.");
-        apiKeyInput.focus();
-        return;
-      }
-
       const pdfFiles = files.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
       if (!pdfFiles.length) return;
 
@@ -502,7 +397,7 @@ ATURAN EKSTRAKSI PENTING:
 
         try {
           const pdfBase64 = await fileToBase64(file);
-          const extractedData = await extractWithGeminiDirect(
+          const extractedData = await extractViaWorkerProxy(
             pdfBase64,
             promptTextarea.value,
             apiKey,
