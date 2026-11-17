@@ -131,7 +131,7 @@ ATURAN EKSTRAKSI PENTING:
 7. Untuk field di JOBDTLANALYSIS, kembalikan teks mentah dari PDF apa adanya (termasuk pemisah koma, garis miring, atau titik koma) agar dapat diproses ke bawah oleh injector Excel.`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: "gemini-3.8-flash",
           contents: [
             { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
             masterPrompt || "Ekstrak data PDF sesuai skema JSON yang ditentukan.",
@@ -169,4 +169,3 @@ ATURAN EKSTRAKSI PENTING:
       "Cache-Control": "no-cache",
     },
   });
-};
