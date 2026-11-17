@@ -28,8 +28,8 @@
       </div>
     </header>
 
-    <!-- API Key Box -->
-    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-6">
+    <!-- API Key & Model Box -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-6 space-y-4">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <label for="apiKeyInput" class="block text-sm font-semibold text-slate-800">Gemini API Key</label>
@@ -43,6 +43,19 @@
             Lihat
           </button>
         </div>
+      </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+        <div>
+          <label for="modelSelect" class="block text-xs font-semibold text-slate-700">Model Gemini API</label>
+          <p class="text-xs text-slate-400">Gunakan default kecuali muncul pesan error model tidak tersedia.</p>
+        </div>
+        <select id="modelSelect"
+          class="w-full sm:w-72 text-xs px-3 py-2 rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="gemini-3.8-flash">gemini-3.8-flash (Default Terbaru)</option>
+          <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+          <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+        </select>
       </div>
     </section>
 
@@ -206,9 +219,11 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
 
     const PROMPT_KEY = "sanmar_master_prompt_v1";
     const API_KEY_STORAGE = "sanmar_gemini_api_key_v1";
+    const MODEL_STORAGE = "sanmar_gemini_model_v1";
 
     const apiKeyInput = document.getElementById("apiKeyInput");
     const toggleKeyBtn = document.getElementById("toggleKeyBtn");
+    const modelSelect = document.getElementById("modelSelect");
     const promptTextarea = document.getElementById("masterPromptInput");
     const resetPromptBtn = document.getElementById("resetPromptBtn");
     const dropzone = document.getElementById("dropzone");
@@ -217,14 +232,27 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
     const fileList = document.getElementById("fileList");
     const clearBtn = document.getElementById("clearBtn");
 
-    apiKeyInput.value = localStorage.getItem(API_KEY_STORAGE) || "";
+    function sanitizeApiKey(raw) {
+      return String(raw || "").replace(/[^\x21-\x7E]/g, "").trim();
+    }
+
+    apiKeyInput.value = sanitizeApiKey(localStorage.getItem(API_KEY_STORAGE) || "");
     apiKeyInput.addEventListener("input", () => {
-      localStorage.setItem(API_KEY_STORAGE, apiKeyInput.value.trim());
+      const clean = sanitizeApiKey(apiKeyInput.value);
+      apiKeyInput.value = clean;
+      localStorage.setItem(API_KEY_STORAGE, clean);
     });
     toggleKeyBtn.addEventListener("click", () => {
       const isPwd = apiKeyInput.type === "password";
       apiKeyInput.type = isPwd ? "text" : "password";
       toggleKeyBtn.textContent = isPwd ? "Sembunyikan" : "Lihat";
+    });
+
+    if (localStorage.getItem(MODEL_STORAGE)) {
+      modelSelect.value = localStorage.getItem(MODEL_STORAGE);
+    }
+    modelSelect.addEventListener("change", () => {
+      localStorage.setItem(MODEL_STORAGE, modelSelect.value);
     });
 
     promptTextarea.value = localStorage.getItem(PROMPT_KEY) || DEFAULT_MASTER_PROMPT;
@@ -291,7 +319,7 @@ Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisa
       return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
     }
 
-    async function extractWithGeminiDirect(pdfBase64, masterPrompt, apiKey) {
+    async function extractWithGeminiDirect(pdfBase64, masterPrompt, apiKey, modelName) {
       const systemInstruction = `Kamu adalah sistem ekstraksi data dokumen laporan pengujian laboratorium (Intertek / SanMar Test Report) presisi tinggi.
 Ekstrak nilai dari file PDF terlampir dan petakan ke JSON sesuai Aturan Utama pengguna.
 
@@ -304,27 +332,35 @@ ATURAN EKSTRAKSI PENTING:
 6. Untuk APPLICANT PROVIDED CARE INSTRUCTION (MSTA_FIELD_5), gabungkan baris-baris instruksi perawatan menjadi satu kalimat dipisahkan koma dan spasi (abaikan label "Sample: A").
 7. Untuk field di JOBDTLANALYSIS, kembalikan teks mentah dari PDF apa adanya (termasuk pemisah koma, garis miring, atau titik koma) agar dapat diproses ke bawah oleh injector Excel.`;
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          contents: [
-            {
-              parts: [
-                { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-                { text: masterPrompt },
-              ],
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      let res;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [
+              {
+                parts: [
+                  { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+                  { text: masterPrompt },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: RESPONSE_SCHEMA,
+              temperature: 0,
             },
-          ],
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: RESPONSE_SCHEMA,
-            temperature: 0,
-          },
-        }),
-      });
+          }),
+        });
+      } catch (networkErr) {
+        throw new Error(
+          `Gagal terhubung ke server Google Gemini (${networkErr.message}). Periksa koneksi internet, matikan AdBlock/VPN/firewall kantor yang memblokir googleapis.com, atau coba ganti Model Gemini di atas.`
+        );
+      }
 
       const payload = await res.json();
       if (!res.ok) {
@@ -337,11 +373,19 @@ ATURAN EKSTRAKSI PENTING:
     }
 
     async function buildExcelFromData(extractedData, fallbackName) {
-      const resp = await fetch("./sanmar-template.xlsx");
-      if (!resp.ok) throw new Error("Gagal memuat file sanmar-template.xlsx");
+      let resp;
+      try {
+        resp = await fetch("./sanmar-template.xlsx");
+      } catch (tplErr) {
+        throw new Error(
+          `Gagal memuat file sanmar-template.xlsx (${tplErr.message}). Pastikan halaman ini dibuka melalui link HTTPS Cloudflare (bukan klik 2x file lokal).`
+        );
+      }
+
+      if (!resp.ok) throw new Error(`Gagal memuat sanmar-template.xlsx (HTTP ${resp.status})`);
       const contentType = resp.headers.get("content-type") || "";
       if (contentType.includes("text/html")) {
-        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/.");
+        throw new Error("File sanmar-template.xlsx tidak ditemukan di folder public/ repository Anda.");
       }
       const arrayBuffer = await resp.arrayBuffer();
 
@@ -427,7 +471,7 @@ ATURAN EKSTRAKSI PENTING:
     }
 
     async function handleFiles(files) {
-      const apiKey = apiKeyInput.value.trim();
+      const apiKey = sanitizeApiKey(apiKeyInput.value);
       if (!apiKey) {
         alert("Masukkan Gemini API Key Anda terlebih dahulu pada kotak di bagian atas.");
         apiKeyInput.focus();
@@ -458,7 +502,12 @@ ATURAN EKSTRAKSI PENTING:
 
         try {
           const pdfBase64 = await fileToBase64(file);
-          const extractedData = await extractWithGeminiDirect(pdfBase64, promptTextarea.value, apiKey);
+          const extractedData = await extractWithGeminiDirect(
+            pdfBase64,
+            promptTextarea.value,
+            apiKey,
+            modelSelect.value
+          );
 
           statusEl.textContent = "Mengisi template Excel...";
           const { blob, outputFilename } = await buildExcelFromData(extractedData, file.name);
