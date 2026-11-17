@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SanMar PDF to Excel Auto-Fill</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen font-sans">
+  <div class="max-w-4xl mx-auto px-4 py-10">
+    <!-- Header -->
+    <header class="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-6">
+      <div>
+        <span class="inline-block px-2.5 py-0.5 text-xs font-semibold tracking-wide uppercase bg-blue-100 text-blue-800 rounded-full mb-2">
+          Intertek &bull; SanMar Workflow
+        </span>
+        <h1 class="text-2xl font-bold text-slate-900">PDF Report to SanMar Excel</h1>
+        <p class="text-sm text-slate-500 mt-1">
+          Unggah file PDF laporan pengujian untuk mengisi <code class="text-slate-700 font-medium">sanmar template.xlsx</code> secara otomatis sesuai Aturan Utama.
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="./sanmar-template.xlsx" download="sanmar template.xlsx"
+           class="text-xs font-medium px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 transition">
+          Unduh Template Acuan
+        </a>
+      </div>
+    </header>
+
+    <!-- Upload Dropzone -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+      <div id="dropzone"
+           class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-10 text-center cursor-pointer transition bg-slate-50/50 hover:bg-blue-50/30">
+        <input id="fileInput" type="file" accept="application/pdf" multiple class="hidden" />
+        <div class="mx-auto w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mb-3">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+          </svg>
+        </div>
+        <p class="text-base font-semibold text-slate-800">Klik atau seret file PDF ke sini</p>
+        <p class="text-xs text-slate-500 mt-1">Mendukung unggah satu atau banyak file PDF sekaligus (maks. 4.5 MB per PDF)</p>
+      </div>
+
+      <!-- Queue / Results List -->
+      <div id="queueContainer" class="mt-6 hidden">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-slate-700">Hasil Pemrosesan</h2>
+          <button id="clearBtn" class="text-xs text-slate-400 hover:text-slate-600">Bersihkan Daftar</button>
+        </div>
+        <ul id="fileList" class="space-y-3"></ul>
+      </div>
+    </section>
+
+    <!-- Collapsible Master Prompt Editor -->
+    <details class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <summary class="cursor-pointer font-semibold text-sm text-slate-800 flex items-center justify-between select-none">
+        <span>Aturan Utama (Master Prompt Mapping)</span>
+        <span class="text-xs font-normal text-blue-600">Klik untuk melihat / edit aturan</span>
+      </summary>
+      <div class="mt-4">
+        <p class="text-xs text-slate-500 mb-2">
+          Perubahan pada teks di bawah ini otomatis tersimpan di browser Anda dan langsung digunakan pada pemrosesan PDF berikutnya.
+        </p>
+        <textarea id="masterPromptInput" rows="16"
+          class="w-full text-xs font-mono bg-slate-900 text-slate-100 rounded-xl p-4 border border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        <div class="mt-3 flex justify-end gap-2">
+          <button id="resetPromptBtn"
+            class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 transition">
+            Reset ke Aturan Default
+          </button>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <script>
+    const DEFAULT_MASTER_PROMPT = `Input data PDF ke Excel (sanmar template.xlsx) sesuai tag yang diberikan:
+
+Untuk Page JOBINFO :
+- Report Number ke JOB_NO
+- Report Number ke TRPT_NO
+- Issue Date ke TRPT_DATE
+- Retest ke TXT_FINISH
+- No. Of samples received ke DETOX_URL
+- Color ke TRPT_ASST_NO
+- End Use ke TXT_END_USE
+- Form No. ke ITS_MAPP_NO
+- Supplier No. ke SUPPLIER_ID
+- Sew Factory No. ke FACTORY_ID
+- Sample Description as Declared ke TRPT_ITEM_DESC
+- Fiber Content ke TXT_FABRIC_CONSTRU
+- Fabric Construction ke TRPT_BUSLINE
+- Product Stage ke TRPT_TESTING_STATUS
+- Garment Size ke TXT_FIBER_CONTENT
+- Fabric Weight ke TRPT_SPECIFICATION
+
+Untuk Page JOBANALYSIS :
+- Sew Factory Name ke MSTA_FIELD_1
+- Supplier Name ke MSTA_FIELD_4
+- Fabric Mill Name ke MSTA_FIELD_6
+- Fabric Finish ke MSTA_FIELD_2
+- SanMar Sourcing Office ke MSTA_FIELD_7
+- Yarn Size ke MSTA_FIELD_8
+- APPLICANT PROVIDED CARE INSTRUCTION ke MSTA_FIELD_5
+
+Untuk Page JOBDTLANALYSIS (susun isinya ke bawah per kolom jika ada tanda pemisah koma ",", garis miring "/", atau titik koma ";" di setiap kata atau kalimat) :
+- Style No. ke STY_NO_S
+- Order No./PO No. ke DTL_PORDER_NO
+- Package Test ke DTLA_FIELD_2
+- Fabric Mill Item No. ke DTLA_FIELD_4
+- Fabric Lot No. ke DTLA_FIELD_5
+- Product Type ke DTLA_FIELD_7
+- Product Test Request ID ke DTLA_FIELD_8
+- Supplier Name ke DTLA_FIELD_9
+- Fabric Mill Name ke DTLA_FIELD_10
+- Sew Factory Name ke DTLA_FIELD_11`;
+
+    const STORAGE_KEY = "sanmar_master_prompt_v1";
+    const promptTextarea = document.getElementById("masterPromptInput");
+    const resetPromptBtn = document.getElementById("resetPromptBtn");
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const queueContainer = document.getElementById("queueContainer");
+    const fileList = document.getElementById("fileList");
+    const clearBtn = document.getElementById("clearBtn");
+
+    // Load saved prompt
+    promptTextarea.value = localStorage.getItem(STORAGE_KEY) || DEFAULT_MASTER_PROMPT;
+    promptTextarea.addEventListener("input", () => {
+      localStorage.setItem(STORAGE_KEY, promptTextarea.value);
+    });
+    resetPromptBtn.addEventListener("click", () => {
+      promptTextarea.value = DEFAULT_MASTER_PROMPT;
+      localStorage.setItem(STORAGE_KEY, DEFAULT_MASTER_PROMPT);
+    });
+
+    clearBtn.addEventListener("click", () => {
+      fileList.innerHTML = "";
+      queueContainer.classList.add("hidden");
+    });
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("border-blue-500", "bg-blue-50/50");
+    });
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("border-blue-500", "bg-blue-50/50");
+    });
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("border-blue-500", "bg-blue-50/50");
+      if (e.dataTransfer.files?.length) {
+        handleFiles(Array.from(e.dataTransfer.files));
+      }
+    });
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files?.length) {
+        handleFiles(Array.from(e.target.files));
+        fileInput.value = "";
+      }
+    });
+
+    function splitValues(rawText) {
+      if (!rawText) return [];
+      const text = String(rawText).trim().replace(/,+$/, "").trim();
+      if (!text) return [];
+      // Protect legal suffixes such as "CO., LTD" or "CO.,LTD"
+      const protectedText = text.replace(
+        /\b(CO|INC|LTD|CORP|LLC|PVT|PTE|S\.A|MFTG)\.,\s*(LTD|INC|CORP|LLC|BHD|PVT|PTE)\b/gi,
+        "$1.__COMMA__$2"
+      );
+      return protectedText
+        .split(/[,/;]+/)
+        .map((part) => part.replace(/__COMMA__/g, ", ").replace(/\s{2,}/g, " ").trim())
+        .filter(Boolean);
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          const base64 = result.split(",")[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function parseIsoDateUTC(isoStr) {
+      if (!isoStr) return null;
+      const match = String(isoStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return isoStr;
+      return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    }
+
+    async function buildExcelFromData(extractedData, fallbackName) {
+      const resp = await fetch("./sanmar-template.xlsx");
+      if (!resp.ok) throw new Error("Gagal memuat file sanmar-template.xlsx");
+      const arrayBuffer = await resp.arrayBuffer();
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(arrayBuffer);
+
+      // 1. Populate JOBINFO (Row 4)
+      const wsJobInfo = workbook.getWorksheet("JOBINFO");
+      const jobInfoCols = {};
+      wsJobInfo.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) jobInfoCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const jobInfoData = extractedData.JOBINFO || {};
+      for (const [fieldName, val] of Object.entries(jobInfoData)) {
+        const colIdx = jobInfoCols[fieldName];
+        if (!colIdx || val === null || val === undefined || val === "") continue;
+        const cell = wsJobInfo.getRow(4).getCell(colIdx);
+        if (fieldName === "TRPT_DATE") {
+          const dt = parseIsoDateUTC(val);
+          cell.value = dt;
+          if (dt instanceof Date) {
+            cell.numFmt = "[$-409]d\\-mmm\\-yyyy;@";
+          }
+        } else {
+          cell.value = String(val);
+          cell.numFmt = "@";
+        }
+      }
+
+      // 2. Populate JOBANALYSIS (Row 4)
+      const wsJobAnalysis = workbook.getWorksheet("JOBANALYSIS");
+      const jobAnalysisCols = {};
+      wsJobAnalysis.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) jobAnalysisCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const jobAnalysisData = extractedData.JOBANALYSIS || {};
+      for (const [fieldName, val] of Object.entries(jobAnalysisData)) {
+        const colIdx = jobAnalysisCols[fieldName];
+        if (!colIdx || val === null || val === undefined || val === "") continue;
+        const cell = wsJobAnalysis.getRow(4).getCell(colIdx);
+        cell.value = String(val);
+        cell.numFmt = "@";
+      }
+
+      // 3. Populate JOBDTLANALYSIS (Row 4 downwards, split by , / ;)
+      const wsDtl = workbook.getWorksheet("JOBDTLANALYSIS");
+      const dtlCols = {};
+      wsDtl.getRow(1).eachCell((cell, colNumber) => {
+        if (cell.value) dtlCols[String(cell.value).trim()] = colNumber;
+      });
+
+      const dtlData = extractedData.JOBDTLANALYSIS || {};
+      for (const [fieldName, rawVal] of Object.entries(dtlData)) {
+        const colIdx = dtlCols[fieldName];
+        if (!colIdx || rawVal === null || rawVal === undefined || rawVal === "") continue;
+        const items = splitValues(rawVal);
+        items.forEach((item, idx) => {
+          const rowIdx = 4 + idx;
+          const cell = wsDtl.getRow(rowIdx).getCell(colIdx);
+          cell.value = item;
+          cell.numFmt = "@";
+        });
+      }
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const reportNo = (jobInfoData.TRPT_NO || jobInfoData.JOB_NO || fallbackName.replace(/\.pdf$/i, "")).trim();
+      const outputFilename = `${reportNo}.xlsx`;
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      return { blob, outputFilename };
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    async function handleFiles(files) {
+      const pdfFiles = files.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+      if (!pdfFiles.length) return;
+
+      queueContainer.classList.remove("hidden");
+
+      for (const file of pdfFiles) {
+        const li = document.createElement("li");
+        li.className = "flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50";
+        li.innerHTML = `
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-800 truncate">${file.name}</p>
+            <p class="status-text text-xs text-blue-600 mt-0.5">Membaca & mengekstrak data PDF...</p>
+          </div>
+          <div class="action-area shrink-0">
+            <span class="inline-block w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></span>
+          </div>
+        `;
+        fileList.prepend(li);
+
+        const statusEl = li.querySelector(".status-text");
+        const actionEl = li.querySelector(".action-area");
+
+        try {
+          const pdfBase64 = await fileToBase64(file);
+          const response = await fetch("/api/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pdfBase64,
+              masterPrompt: promptTextarea.value,
+            }),
+          });
+
+          const result = await response.json();
+          if (!response.ok || !result.success) {
+            throw new Error(result.error || "Gagal mengekstrak PDF");
+          }
+
+          statusEl.textContent = "Mengisi template Excel...";
+          const { blob, outputFilename } = await buildExcelFromData(result.data, file.name);
+
+          triggerDownload(blob, outputFilename);
+
+          statusEl.className = "status-text text-xs text-emerald-600 mt-0.5";
+          statusEl.textContent = `Selesai -> ${outputFilename}`;
+
+          const btn = document.createElement("button");
+          btn.className = "text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white transition";
+          btn.textContent = "Unduh Ulang .xlsx";
+          btn.onclick = () => triggerDownload(blob, outputFilename);
+
+          actionEl.innerHTML = "";
+          actionEl.appendChild(btn);
+        } catch (err) {
+          statusEl.className = "status-text text-xs text-rose-600 mt-0.5";
+          statusEl.textContent = err.message || "Gagal memproses file";
+          actionEl.innerHTML = `<span class="text-xs font-semibold text-rose-600">Error</span>`;
+        }
+      }
+    }
+  </script>
+</body>
+</html>

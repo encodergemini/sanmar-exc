@@ -1,0 +1,10 @@
+{
+  "name": "sanmar-pdf-to-excel-flow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Automated PDF Test Report to SanMar Excel Template Converter using Gemini API & ExcelJS",
+  "dependencies": {
+    "@google/genai": "^1.0.0"
+  }
+}
